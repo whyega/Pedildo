@@ -11,7 +11,13 @@ constexpr auto DILDO_MODEL_ID = 321;
 constexpr auto SCALE = 2.f;
 constexpr auto DOWN_OFFSET = 0.5f;
 
-std::unordered_map<CEntity*, std::pair<std::uint32_t, CObject*>> gPool;
+std::unordered_map<CEntity*, std::vector<std::pair<std::uint32_t, CObject*>>>
+    gPool;
+
+static const std::unordered_map<int, int> gBonesPair = {
+    {53, 52}, {51, 52}, {43, 42}, {41, 42}, {51, 2},  {41, 2},
+    {3, 2},   {4, 3},   {4, 22},  {4, 32},  {32, 33}, {22, 23},
+    {23, 24}, {33, 34}, {4, 8},   {8, 7},   {8, 6},   {6, 7}};
 
 using namespace plugin;
 
@@ -41,16 +47,12 @@ void RenderEntity(CEntity* entity) {
   entity->Remove();
 }
 
-void RenderObject(CEntity* entity) {
-  auto [handle, object] = gPool[entity];
+void RenderObject(std::vector<std::pair<std::uint32_t, CObject*>> objects) {
+  for (auto& objectData : objects) {
+    auto [handle, object] = objectData;
 
-  object->CreateRwObject();
-  auto pos = entity->GetPosition();
-  pos.z -= DOWN_OFFSET;
-  object->Teleport(pos, false);
-  object->SetHeading(entity->GetHeading());
-
-  RenderEntity(object);
+    RenderEntity(object);
+  }
 }
 
 static void __fastcall CEntity__Render(CEntity* entity, void* edx) {
@@ -65,15 +67,47 @@ static void __fastcall CEntity__Render(CEntity* entity, void* edx) {
       if (!Command<Commands::HAS_MODEL_LOADED>(DILDO_MODEL_ID)) return;
     }
 
-    std::uint32_t handle{};
-    Command<Commands::CREATE_OBJECT>(DILDO_MODEL_ID, 0.0f, 0.0f, 50.0f,
-                                     &handle);
-    auto object = CPools::GetObject(handle);
-    if (!object) return;
-    gPool.insert_or_assign(entity, std::pair(handle, object));
+    std::vector<std::pair<std::uint32_t, CObject*>> bones;
+    for (auto i = 0; i < gBonesPair.size(); i++) {
+      std::uint32_t handle{};
+      Command<Commands::CREATE_OBJECT>(DILDO_MODEL_ID, 0.0f, 0.0f, 50.0f,
+                                       &handle);
+      auto object = CPools::GetObject(handle);
+      object->CreateRwObject();
+      if (!object) return;
+      bones.push_back(std::pair(handle, object));
+    }
+    gPool.insert_or_assign(entity, bones);
   }
 
-  RenderObject(entity);
+  auto objects = it->second;
+
+  // auto AnimHierarchyFromSkinClump =
+  //     GetAnimHierarchyFromSkinClump(entity->m_pRwClump);
+
+  // if (AnimHierarchyFromSkinClump) {
+  //   int i = 0;
+  //   for (auto&& [startBoneId, endBoneId] : gBonesPair) {
+  //     auto id = RpHAnimIDGetIndex(AnimHierarchyFromSkinClump, startBoneId);
+  //     auto startBoneMat =
+  //         &RpHAnimHierarchyGetMatrixArray(AnimHierarchyFromSkinClump)[id];
+
+  //     objects[i].second->SetMatrix({startBoneMat, true});
+  //     // auto start_bone_pos = world_to_screen_pos(
+  //     //     misc::get_bone_pos(remote_player.gta_ped(), start_bone_id));
+  //     // if (start_bone_pos.z < 1.f) return;
+
+  //     // auto end_bone_pos = misc::world_to_screen_pos(
+  //     //     misc::get_bone_pos(remote_player.gta_ped(), end_bone_id));
+  //     // if (end_bone_pos.z < 1.f) return;
+
+  //     // draw_list->AddLine({start_bone_pos.x, start_bone_pos.y},
+  //     //                    {end_bone_pos.x, end_bone_pos.y}, color);
+  //     i++;
+  //   }
+  // }
+
+  // RenderObject(it->second);
 }
 
 void Plugin::OnAttach(void* handle) {
@@ -83,8 +117,10 @@ void Plugin::OnAttach(void* handle) {
   Events::pedDtorEvent += [](CPed* ped) {
     auto it = gPool.find(ped);
     if (it != gPool.end()) {
-      auto [handle, object] = it->second;
-      Command<Commands::DELETE_OBJECT>(handle);
+      for (auto& objectData : it->second) {
+        auto [handle, object] = objectData;
+        Command<Commands::DELETE_OBJECT>(handle);
+      }
     }
   };
 }

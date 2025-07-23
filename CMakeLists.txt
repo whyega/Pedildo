@@ -40,11 +40,23 @@ FetchContent_Declare(
 
 FetchContent_MakeAvailable(plugintmplt xbyak ktsignal kthook)
 
+if (NOT DEFINED ENV{DXSDK_DIR})
+    if (MSVC)
+        message("Please install DirectX SDK before compiling this project")
+    endif ()
+else ()
+    include_directories("$ENV{DXSDK_DIR}/Include")
+    link_directories("$ENV{DXSDK_DIR}/Lib/x86")
+    add_definitions(-DDXSDK_FOR_VS=1)
+endif ()
+
+
 find_package(plugin-sdk REQUIRED)
 target_link_libraries(${PROJECT_NAME} PRIVATE
   pluginsdk::gtasa
   plugintmplt
   kthook
+  d3d9
 )
 
 set_target_properties(${PROJECT_NAME} PROPERTIES
