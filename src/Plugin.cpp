@@ -1,90 +1,99 @@
-#include "plugin.hpp"
+#include "Plugin.hpp"
 
-#include <CStreaming.h>
-#include <CVisibilityPlugins.h>
-#include <extensions/ScriptCommands.h>
 #include <plugin.h>
 
-#include <unordered_map>
+#include <cctype>
+#include <cstdint>
+#include <sstream>
+#include <string>
+#include <utility>
+#include <vector>
 
-constexpr auto DILDO_MODEL_ID = 321;
-constexpr auto SCALE = 2.f;
-constexpr auto DOWN_OFFSET = 0.5f;
+namespace {
 
-std::unordered_map<CEntity*, std::pair<std::uint32_t, CObject*>> gPool;
+std::vector<std::string> ParseArguments(const char* arguments) {
+  std::istringstream input{arguments ? arguments : ""};
+  std::vector<std::string> tokens;
 
-using namespace plugin;
-
-static RpAtomic* ScaleAtomicCallback(RpAtomic* atomic, void* data) {
-  RwMatrix* matrix = (RwMatrix*)data;
-  RwFrame* frame = (RwFrame*)atomic->object.object
-                       .parent;  // Получаем фрейм через RwObjectHasFrame
-  if (frame) {
-    RwFrameTransform(frame, matrix, rwCOMBINEPRECONCAT);
-  }
-  return atomic;
-}
-
-void RenderEntity(CEntity* entity) {
-  auto rwObject = entity->m_pRwObject;
-  auto rwClump = entity->m_pRwClump;
-  if (!rwObject || !rwClump) return;
-
-  RwV3d scaleVec = {SCALE, SCALE, SCALE};
-  RwMatrix scaleMatrix;
-  RwMatrixScale(&scaleMatrix, &scaleVec, rwCOMBINEREPLACE);
-  RpClumpForAllAtomics(rwClump, ScaleAtomicCallback, &scaleMatrix);
-
-  entity->Add();
-  entity->PreRender();
-  CVisibilityPlugins::RenderEntity(entity, false, 999.f);
-  entity->Remove();
-}
-
-void RenderObject(CEntity* entity) {
-  auto [handle, object] = gPool[entity];
-
-  object->CreateRwObject();
-  auto pos = entity->GetPosition();
-  pos.z -= DOWN_OFFSET;
-  object->Teleport(pos, false);
-  object->SetHeading(entity->GetHeading());
-
-  RenderEntity(object);
-}
-
-static void __fastcall CEntity__Render(CEntity* entity, void* edx) {
-  if (!entity) return;
-
-  auto it = gPool.find(entity);
-  if (it == gPool.end()) {
-    bool exist = Command<Commands::HAS_MODEL_LOADED>(DILDO_MODEL_ID);
-    if (!exist) {
-      Command<Commands::REQUEST_MODEL>(DILDO_MODEL_ID);
-      Command<Commands::LOAD_ALL_MODELS_NOW>();
-      if (!Command<Commands::HAS_MODEL_LOADED>(DILDO_MODEL_ID)) return;
+  for (std::string token; input >> token;) {
+    for (auto& character : token) {
+      character = static_cast<char>(
+          std::tolower(static_cast<unsigned char>(character)));
     }
+    tokens.push_back(std::move(token));
+  }
+  return tokens;
+}
 
-    std::uint32_t handle{};
-    Command<Commands::CREATE_OBJECT>(DILDO_MODEL_ID, 0.0f, 0.0f, 50.0f,
-                                     &handle);
-    auto object = CPools::GetObject(handle);
-    if (!object) return;
-    gPool.insert_or_assign(entity, std::pair(handle, object));
+}  // namespace
+
+void Plugin::OnAttach(void* module) {
+  (void)module;
+
+  constexpr std::array<std::uintptr_t, 2> renderCalls{0x5E77FC,
+                                                      0x5E780A};
+  for (std::size_t i = 0; i < renderPedHooks_.size(); ++i) {
+    auto& hook = renderPedHooks_[i];
+    hook.set_dest(renderCalls[i]);
+    hook.before.connect([this](const auto&, CPed*& ped) {
+      commands_.TryRegister(&Plugin::SelectDildo);
+      remote_.Process();
+
+      if (!ped) {
+        return false;
+      }
+
+      return !skeleton_.Render(*ped) &&
+             !remote_.ShouldSuppress(ped);
+    });
+    hook.install();
   }
 
-  RenderObject(entity);
-}
-
-void Plugin::OnAttach(void* handle) {
-  patch::RedirectCall(0x5E77FC, &CEntity__Render);
-  patch::RedirectCall(0x5E780A, &CEntity__Render);
-
-  Events::pedDtorEvent += [](CPed* ped) {
-    auto it = gPool.find(ped);
-    if (it != gPool.end()) {
-      auto [handle, object] = it->second;
-      Command<Commands::DELETE_OBJECT>(handle);
-    }
+  plugin::Events::initGameEvent += [this] {
+    skeleton_.Initialize();
+    remote_.Initialize();
   };
+
+  plugin::Events::gameProcessEvent += [this] {
+    remote_.Process();
+  };
+
+  plugin::Events::shutdownRwEvent += [this] {
+    remote_.Shutdown();
+    skeleton_.Shutdown();
+  };
+}
+
+void Plugin::OnDetach() {
+  for (auto& hook : renderPedHooks_) {
+    hook.remove();
+  }
+  remote_.Shutdown();
+  skeleton_.Shutdown();
+}
+
+void __cdecl Plugin::SelectDildo(const char* arguments) {
+  auto& plugin = GetInstance();
+  const auto tokens = ParseArguments(arguments);
+
+  if (tokens.size() == 2 && tokens[0] == "all") {
+    if (tokens[1] == "on") {
+    plugin.remote_.SetEnabled(true);
+    } else if (tokens[1] == "off") {
+    plugin.remote_.SetEnabled(false);
+    } else if (tokens[1].size() == 1 && tokens[1][0] >= '1' &&
+               tokens[1][0] <= '3') {
+      const auto number = static_cast<unsigned int>(tokens[1][0] - '0');
+      if (plugin.remote_.SetModel(number)) {
+        plugin.remote_.SetEnabled(true);
+      }
+    }
+    return;
+  }
+
+  if (tokens.size() == 1 && tokens[0].size() == 1 &&
+      tokens[0][0] >= '1' && tokens[0][0] <= '3') {
+    plugin.skeleton_.SelectModel(
+        static_cast<unsigned int>(tokens[0][0] - '0'));
+  }
 }
